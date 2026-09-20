@@ -1,4 +1,6 @@
-# LabPurchaseBot website draft
+# LabPurchaseBot personal project website draft
+
+The site describes a personal, non-commercial project used by its maintainer and a small group of known lab colleagues, with no public signup, subscription, or paid offering. Its plain, single-column layout is intentionally closer to a project note than a product landing page.
 
 This change adds only the static informational website in `docs/`. It does not enable GitHub Pages, change OAuth settings, or change the bot.
 
@@ -36,3 +38,4 @@ Publishing these informational pages does not change the Google OAuth audience o
 - GitHub Pages: https://docs.github.com/en/pages/getting-started-with-github-pages/what-is-github-pages
 
 Content reflects the bot source inspected September 20, 2026, including the current local query changes. Recheck if behavior changes before publication.
+
