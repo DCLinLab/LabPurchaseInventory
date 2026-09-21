@@ -75,11 +75,12 @@ def is_channel_message(body, settings, bot_user_id):
 
 
 class MessageReceiver:
-    def __init__(self, settings, bot_user_id, photo_intake=None, query_worker=None):
+    def __init__(self, settings, bot_user_id, photo_intake=None, query_worker=None, pong=PONG):
         self.settings = settings
         self.bot_user_id = bot_user_id
         self.photo_intake = photo_intake
         self.query_worker = query_worker
+        self.pong = pong
         self._seen = OrderedDict()
         self._lock = Lock()
 
@@ -109,7 +110,7 @@ class MessageReceiver:
             client.chat_postMessage(
                 channel=self.settings.channel_id,
                 thread_ts=event.get("thread_ts") or event["ts"],
-                text=PONG,
+                text=self.pong,
             )
             LOG.info("Connection-test reply sent.")
         except Exception:
@@ -141,6 +142,8 @@ def main():
         if not args.check:
             instance.acquire()
         settings = Settings.from_environment()
+        from test_channel import configured_test_channels, start_test_channel
+        test_channels = configured_test_channels(settings.channel_id)
         client = WebClient(token=settings.bot_token)
         identity = client.auth_test()
         if identity.get("team_id") != settings.team_id or not identity.get("bot_id"):
@@ -148,6 +151,9 @@ def main():
         # Requires only the channels:history scope already granted to the bot.
         client.conversations_history(channel=settings.channel_id, limit=1)
         LOG.info("Bot identity and target channel access verified: team=%s user=%s channel=%s", settings.team_id, identity["user_id"], settings.channel_id)
+        for channel in test_channels:
+            client.conversations_history(channel=channel, limit=1)
+            LOG.info('Test channel access verified: channel=%s', channel)
         if args.check:
             LOG.info("Socket token syntax checked; its connection will be verified when the listener starts.")
             return 0
@@ -189,7 +195,7 @@ def main():
             from status_queries import StatusQueryWorker
             query_worker = StatusQueryWorker(ROOT/'.local'/'queries',settings.channel_id,client,sheet_worker.store.config)
             query_worker.start()
-            LOG.info('Semantic read-only order/inventory questions enabled; model=gpt-5.6-luna reasoning=low.')
+            LOG.info('Flexible read-only lab analysis enabled; live sheet and parsed email snapshots; model=gpt-5.6-luna reasoning=low.')
         receiver = MessageReceiver(settings,identity['user_id'],intake,query_worker)
         order_worker = configured_order_worker(client,settings.channel_id)
         if order_worker:
@@ -209,9 +215,22 @@ def main():
             worker.start()
             LOG.info("Background label reader uses Codex ChatGPT login; model=%s ready=%s. Shared Codex allowance; no API-key fallback.", reader.model, reader.ready())
 
+        receivers = {settings.channel_id: receiver}
+        test_workers = []
+        for channel in test_channels:
+            test_receiver, workers = start_test_channel(
+                ROOT / '.local', settings, channel, identity['user_id'], client,
+                sheet_worker.store.config if sheet_worker else None,
+                label_enabled=worker is not None)
+            receivers[channel] = test_receiver
+            test_workers.extend(workers)
+            LOG.info('Test channel enabled: channel=%s; isolated photos, read-only real sheet context.', channel)
+
         @app.event("message")
         def on_message(body, client):
-            receiver.receive(body, client)
+            selected = receivers.get(body.get('event', {}).get('channel'))
+            if selected:
+                selected.receive(body, client)
 
         @app.error
         def on_error(error, logger):
@@ -223,6 +242,8 @@ def main():
         try:
             SocketModeHandler(app, settings.app_token).start()
         finally:
+            for test_worker in test_workers:
+                test_worker.stop.set()
             if worker:
                 worker.stop.set()
             if sheet_worker:

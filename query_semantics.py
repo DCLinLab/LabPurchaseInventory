@@ -8,6 +8,7 @@ from jsonschema import Draft202012Validator
 from label_reader import CodexLabelReader, ReaderError, object_schema
 from product_matching import same_product
 
+QUERY_VERSION = 2
 
 PLAN_SCHEMA = object_schema({
     'action': {'type': 'string', 'enum': ['ignore', 'clarify', 'inventory', 'orders']},
@@ -40,9 +41,15 @@ Do not place purchases, change inventory, delete records, send mail, or claim to
 do so. If asked for such changes, clarify that this query handler is read-only.
 Unrelated questions are ignore, not failed inventory searches.
 Use inventory for received additions, stock quantities, supplies, or storage.
-Use orders for shipment progress, purchase status, tracking, and ETA. Distinguish
-requested receipt history from shipping/order date history. Order date filtering
-is unsupported: clarify that limitation instead of dropping the requested dates.
+Use orders for purchases, orders placed, shipment progress, purchase status,
+tracking, and ETA. 'What did we buy this week' means orders placed this week;
+answer that interpretation directly, without asking whether purchases mean receipts.
+Distinguish requested receipt history from order placement and shipment history.
+The executor supports order-date filtering using the recorded Order date column.
+For orders, period filters order placement dates, never receipt or shipping dates.
+Missing order dates are reported by the executor, not a reason to refuse the query.
+The executor capabilities below are authoritative even if an earlier bot reply
+incorrectly said that order-date filtering was unsupported.
 The executor HAS the complete live receipt table, including Slack photo posting
 UTC timestamps and received quantities, and supports arbitrary receipt date ranges.
 Receipt rows are intentionally omitted from this catalog, which is for product
@@ -60,7 +67,7 @@ selection=not_found, keys=[]. Do not broaden an explicit identifier mismatch.
 Use only supplied keys; keys for inventory start inventory: and orders: for orders.
 For unsupported filters (requester, unrecorded status history, usage, etc.) ask a
 short clarification explaining the missing information; don't silently omit them.
-For date-limited receipt queries return inclusive start / exclusive end as ISO
+For date-limited receipt or order-placement queries return inclusive start / exclusive end as ISO
 timestamps with timezone. Current time is supplied in UTC; default date boundaries
 are UTC and the answer labels them. Past week = rolling 7 days; last calendar week
 means previous Monday-to-Monday. This week/month starts at its calendar boundary.
@@ -105,7 +112,7 @@ def validate_plan(plan, records, now):
         if (plan['action'] == 'clarify') != bool(plan['clarification']):
             raise ValueError('invalid_clarification')
         if plan['period']:
-            if plan['action'] != 'inventory':
+            if plan['action'] not in ('inventory', 'orders'):
                 raise ValueError('unsupported_period')
             dates = [datetime.fromisoformat(plan['period'][key].replace('Z', '+00:00'))
                      for key in ('start', 'end')]
@@ -139,7 +146,8 @@ class SemanticQueryReader:
                    'records': records,
                    'executor_capabilities': {'receipt_date_filter': True,
                        'receipt_quantities': True, 'date_basis': 'Slack photo posted at UTC',
-                       'current_stock_after_usage': False, 'order_date_filter': False,
+                       'current_stock_after_usage': False, 'order_date_filter': True,
+                       'order_date_basis': 'Recorded Order date (calendar date, not email arrival or shipment date)',
                        'requester_ownership': False}}
         result = self.reader.structured(PLAN_SCHEMA, INSTRUCTIONS,
                                        json.dumps(payload, ensure_ascii=False))

@@ -26,7 +26,8 @@ class WorkerTests(unittest.TestCase):
         self.client=Mock();self.client.chat_postMessage.return_value={'ts':'200.1'}
         self.now=1000
         self.interpreter=Mock()
-        self.interpreter.interpret.return_value={'fields': {'action':'inventory','selection':'all','record_keys':[], 'period':None,'wants_eta':False,'clarification':None}}
+        self.interpreter.analyze.side_effect=lambda text,data,now,context: {
+            'reply':{'text':str(data['tables']['inventory'][0]['received'])+' received','links':[]},'trace':[]}
         self.worker=StatusQueryWorker(Path(self.temp.name)/'queries','C123',self.client,config,clock=lambda:self.now,interpreter=self.interpreter)
         for name,rows in [('orders',orders),('inventory',inventory),('receipts',receipts)]:
             store=Mock();store.snapshot.return_value=rows;setattr(self.worker,name,store)
@@ -53,7 +54,8 @@ class WorkerTests(unittest.TestCase):
         self.worker.process(self.path());self.client.chat_postMessage.assert_called_once()
 
     def test_irrelevant_query_silent_and_arrival_photo_still_goes_to_intake(self):
-        self.interpreter.interpret.return_value['fields']['action']='ignore'
+        self.interpreter.analyze.side_effect=None
+        self.interpreter.analyze.return_value={'reply':None,'trace':[]}
         self.event['text']='Where should we eat lunch?';self.worker.capture(self.event)
         self.assertEqual(self.worker.process(self.path())['status'],'ignored')
         self.client.chat_postMessage.assert_not_called()

@@ -34,7 +34,7 @@ def row_link(config, tab, row):
             str(config['tabs'][tab]['sheet_id']) + '&range=' + quote(f'A{row}'))
 
 
-def build_reply(result, record, orders, inventory, receipts, config):
+def build_reply(result, record, orders, inventory, receipts, config, preview=False):
     lines, links, contexts = [], [], []
     by_id = {r[0]: (row,r) for row,r in receipts.items() if r and r[0]}
     for index,item in enumerate(result['fields']['items']):
@@ -52,7 +52,7 @@ def build_reply(result, record, orders, inventory, receipts, config):
         names = {o['product'] for o in choices if o['product']}
         title = next(iter(names)) if len(names)==1 else r[3] or item.get('product') or 'Package'
         if lines: lines.append('')
-        lines.append('Received: ' + plain(title))
+        lines.append(('Test receipt: ' if preview else 'Received: ') + plain(title))
         lines.append('Catalog: ' + plain(r[5]) + (' | ' + plain(r[6]) if r[6] else ''))
         if match['confirmed_order']:
             lines.append('Matched order: ' + plain(match['confirmed_order']) + ' (order/tracking reference).')
@@ -62,7 +62,7 @@ def build_reply(result, record, orders, inventory, receipts, config):
         else:
             lines.append('No matching order found in the sheet yet.')
         if r[8] != '' and r[9]:
-            lines.append(f'This receipt: {plain(r[8])} {plain(r[9])}.')
+            lines.append(f'{"Would record" if preview else "This receipt"}: {plain(r[8])} {plain(r[9])}.')
             q = infer_quantity(item,orders.values(),record.get('caption',''))
             if q and q['quantity']==r[8] and q['unit']==r[9]:
                 lines.append(q['note'])
@@ -80,11 +80,12 @@ def build_reply(result, record, orders, inventory, receipts, config):
         if len(matches)==1:
             inv_row,v=matches[0]
             value = lambda x: 'unknown' if x=='' else plain(x)
-            lines.append(f'Inventory delivery totals: {value(v[4])} ordered / {value(v[5])} received / '
+            lines.append(f'{"Current real inventory (excludes this test)" if preview else "Inventory delivery totals"}: {value(v[4])} ordered / {value(v[5])} received / '
                          f'{value(v[6])} outstanding ({plain(v[7])}).')
             lines.append('Reconciliation: ' + plain(v[8]) + '. Usage is not deducted.')
             links.append({'text':'Open Inventory', 'url':row_link(config,'Inventory',inv_row)})
-        links.append({'text':'Open receipt','url':row_link(config,'Package receipts',receipt_row)})
+        if not preview:
+            links.append({'text':'Open receipt','url':row_link(config,'Package receipts',receipt_row)})
         if len(choices)==1:
             links.append({'text':'Open order','url':row_link(config,'Orders',choices[0]['row'])})
         if r[11]: lines.append('Reported stored at: ' + plain(r[11]))

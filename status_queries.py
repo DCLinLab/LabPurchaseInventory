@@ -1,24 +1,42 @@
-"""Semantic Slack requests with deterministic, read-only sheet execution."""
+"""Durable Slack Q&A using flexible, read-only lab record analysis.
+
+Legacy plan renderers below remain test/reference utilities; the worker uses QueryAnalyst.
+"""
 
 import json
 import logging
 import re
 import time
+import math
+from datetime import datetime, timezone
 from pathlib import Path
 from threading import Event, Thread
 
-from inventory_sync import GoogleInventoryStore, each_quantity
+from inventory_sync import each_quantity
 from label_reader import plain, slack_payload, ReaderError
-from query_semantics import SemanticQueryReader, catalog, validate_plan, plan_period
-from order_sync import GoogleOrderStore
+from query_semantics import catalog, validate_plan, plan_period
 from photo_intake import write_json
 from product_matching import same_product, receipt_order_match
 from receipt_reply import live_orders, row_link
 from receipt_quantity import normalized
 from runtime_lock import InstanceLock
-from sheet_sync import GoogleReceiptStore
+from query_analyst import QueryAnalyst, VERSION as ANALYST_VERSION
+from query_data import snapshot as analysis_snapshot, fingerprint as analysis_fingerprint
+from query_data import ReadOnlyOrders, ReadOnlyInventory, ReadOnlyReceipts
 
 LOG = logging.getLogger('labpurchase.queries')
+
+
+def order_date(value):
+    """Read native Sheets dates or explicit ISO dates; never substitute receipt dates."""
+    try:
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
+            return datetime.fromtimestamp((value - 25569) * 86400, timezone.utc)
+        if isinstance(value, str) and re.fullmatch(r'\d{4}-\d{2}-\d{2}', value.strip()):
+            return datetime.fromisoformat(value.strip()).replace(tzinfo=timezone.utc)
+    except (ValueError, OverflowError, OSError):
+        pass
+    return None
 def dated_receipts(item, receipts, period):
     selected=[];seen=set();undated=0
     for row,original in receipts.items():
@@ -35,8 +53,7 @@ def dated_receipts(item, receipts, period):
 
 
 def clean_query(text):
-    text=re.sub(r'<@[A-Z0-9]+>', '', text or '').strip()[:1500]
-    return re.sub(r"(?i)\b(what|where|when)['’]s\b",r'\1 is',text)
+    return (text or '').strip()[:6000]
 
 
 def answer_query(text, orders, inventory, receipts, config, now=None, plan=None):
@@ -50,13 +67,30 @@ def answer_query(text, orders, inventory, receipts, config, now=None, plan=None)
                for row, values in (orders if kind == 'orders' else inventory).items()]
     selected = records if plan['selection'] == 'all' else [r for r in records
         if f"{kind}:{r['row']}" in plan['record_keys']]
+    missing_order_dates = 0
+    if period and kind == 'orders':
+        dated = []
+        for match in selected:
+            date = order_date(match['values'][1])
+            if date is None:
+                missing_order_dates += 1
+            elif period[0] <= date.timestamp() < period[1]:
+                dated.append(match)
+        selected = dated
+        order_period_header = 'Orders placed in ' + period[2] + ':'
+        order_period_note = ('Dates use the recorded Order date, not email arrival, shipment, or package receipt dates.' +
+                             (f' {missing_order_dates} matching order line(s) with missing/unusable dates were excluded.'
+                              if missing_order_dates else ''))
+        if not selected:
+            return {'text':order_period_header + '\nNo matching orders with recorded order dates in this period.\n' + order_period_note,
+                    'links':[]}
     if not selected:
         if generic:
             return {'text':'There are no tracked '+kind+' entries in the sheet yet.','links':[]}
         return {'text':"I couldn't find a matching " + ('order' if kind=='orders' else 'inventory item') +
                 ' in the tracked sheet. Try an order ID, catalog number, or the product name from the label. '
                 'This does not establish that the lab has none.', 'links':[]}
-    if period:
+    if period and kind == 'inventory':
         period_matches=[];undated=0
         for match in selected:
             found,missing=dated_receipts(match['values'],receipts,period)
@@ -77,7 +111,7 @@ def answer_query(text, orders, inventory, receipts, config, now=None, plan=None)
         if undated:lines.append(str(undated)+' matching receipt(s) with missing/unusable dates were excluded.')
         lines.append('Dates use Slack photo posting time (UTC), not a verified physical arrival time. These are receipts, not stock remaining after usage.')
         return {'text':'\n'.join(lines)[:11000],'links':links[:5]}
-    lines=['From the current sheet:'];links=[]
+    lines=[order_period_header if period and kind == 'orders' else 'From the current sheet:'];links=[]
     all_orders=live_orders(orders)
     v=lambda x: 'unknown' if x=='' or x is None else plain(x)
     for match in selected[:5]:
@@ -85,6 +119,8 @@ def answer_query(text, orders, inventory, receipts, config, now=None, plan=None)
         if kind=='orders':
             lines += ['',plain(r[4])+' — order '+plain(r[0]),'Catalog: '+plain(r[5])+(' | '+plain(r[6]) if r[6] else ''),
                       'Ordered: '+v(r[7])+' '+v(r[8])+'. Status: '+v(r[9])+'.']
+            date = order_date(r[1])
+            lines.append('Order date: ' + (date.strftime('%Y-%m-%d') if date else 'not recorded') + '.')
             if r[10]: lines.append('Tracking: '+plain(r[10]))
             detail = re.search(r'Email status detail: (.*?)(?:; Invoice:|; Shipment quantity|$)',str(r[12]))
             if detail:
@@ -116,16 +152,18 @@ def answer_query(text, orders, inventory, receipts, config, now=None, plan=None)
             lines.append('These are cumulative deliveries, not current stock on hand; usage and opening stock are not tracked.')
             links.append({'text':'Open Inventory','url':row_link(config,'Inventory',row)})
     if len(selected)>5:lines.append(f'\n{len(selected)-5} more matches; include a catalog number or product specification to narrow the results.')
+    if period and kind == 'orders': lines.append(order_period_note)
     return {'text':'\n'.join(lines)[:11000],'links':links}
 
 
 class StatusQueryWorker:
-    def __init__(self,root,channel_id,client,config,clock=time.time,interpreter=None):
+    def __init__(self,root,channel_id,client,config,clock=time.time,interpreter=None,reply_prefix=''):
         self.root,self.channel_id,self.client,self.config,self.clock=Path(root),channel_id,client,config,clock
         self.root.mkdir(parents=True,exist_ok=True)
-        self.orders=GoogleOrderStore(config);self.inventory=GoogleInventoryStore(config);self.receipts=GoogleReceiptStore(config)
+        self.orders=ReadOnlyOrders(config);self.inventory=ReadOnlyInventory(config);self.receipts=ReadOnlyReceipts(config)
         self.stop=Event()
-        self.interpreter = interpreter or SemanticQueryReader()
+        self.interpreter = interpreter or QueryAnalyst()
+        self.reply_prefix = reply_prefix
 
     def capture(self,event):
         if event.get('channel') != self.channel_id or event.get('files'): return False
@@ -157,12 +195,12 @@ class StatusQueryWorker:
             try:
                 orders, inventory, receipts = self.orders.snapshot(), self.inventory.snapshot(), self.receipts.snapshot()
             finally:lock.release()
-            records = catalog(orders, inventory, receipts)
-            # Cache interpretation against the candidate catalog. Sheet quantities
-            # may change between retries; rendering always uses the new snapshot.
-            import hashlib
-            fingerprint = hashlib.sha256(json.dumps(records, sort_keys=True).encode()).hexdigest()
-            if not state.get('interpretation') or state.get('catalog_fingerprint') != fingerprint:
+            data = analysis_snapshot(orders,inventory,receipts,self.config,self.root.parent/'email-intake')
+            fingerprint = analysis_fingerprint(data)
+            # A generated answer is reusable only against the entire same snapshot.
+            # Changed quantities, dates, notes or email facts require fresh analysis.
+            if (not state.get('analysis') or state.get('analysis_fingerprint') != fingerprint
+                    or state.get('analysis_version') != ANALYST_VERSION):
                 context = []
                 for other in sorted(self.root.glob(self.channel_id + '_*.json')):
                     prior = json.loads(other.read_text(encoding='utf-8'))
@@ -170,12 +208,15 @@ class StatusQueryWorker:
                         context.append({'message': prior['text'], 'reply': prior.get('reply', {}).get('text', '')[:2000]})
                 state['interpretation_attempts'] = state.get('interpretation_attempts', 0) + 1
                 write_json(path, state)
-                state['interpretation'] = self.interpreter.interpret(state['text'], records, self.clock(), context[-6:])
-                state['catalog_fingerprint'] = fingerprint
+                state['analysis'] = self.interpreter.analyze(state['text'],data,self.clock(),context[-6:])
+                state['analysis_fingerprint'] = fingerprint
+                state['analysis_version'] = ANALYST_VERSION
                 state['interpreted_at'] = self.clock()
                 write_json(path, state)
-            reply=answer_query(state['text'],orders,inventory,receipts,self.config,
-                               now=state['interpreted_at'],plan=state['interpretation']['fields'])
+                LOG.info('Lab query analysis complete ts=%s model_calls=%s',state['message_ts'],
+                         len(state['analysis'].get('trace',[])))
+            cached_reply = state['analysis']['reply']
+            reply = dict(cached_reply) if cached_reply else None
         except Exception as error:
             code = str(error) if isinstance(error, ReaderError) else type(error).__name__
             quota = code == 'codex_usage_limit'
@@ -190,6 +231,7 @@ class StatusQueryWorker:
             write_json(path,state);return state
         if not reply:
             state['status']='ignored';write_json(path,state);return state
+        reply['text'] = self.reply_prefix + reply['text']
         state.update(status='posting',reply=reply);write_json(path,state)
         try:
             response=self.client.chat_postMessage(channel=self.channel_id,thread_ts=state['thread_ts'],**slack_payload(reply['text'],reply['links']))

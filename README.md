@@ -304,34 +304,47 @@ separate unfinished workflow.
 
 ## Inventory delivery summary
 
-`status_queries.py` sends text-only human messages (except ping/test) through
-`query_semantics.py` using gpt-5.6-luna with low reasoning effort, the saved ChatGPT
-login, and no API-key fallback. Both query interpretation and photo analysis use
-reasoning; interpretation is not replaced by keyword filters to save usage.
-The model sees the message, up to six earlier locally captured messages/replies
-from the same thread, available lookup capabilities, and a live product/order
-catalog. It selects a read-only action, matching record keys and an optional
-receipt date interval. Schema, key, and date checks precede deterministic lookup
-and calculation. Unrelated chat/shortage announcements stay silent; genuine
-ambiguity gets clarification. No keyword-parser fallback exists.
+`status_queries.py` sends text-only human messages (except ping/test) to
+`query_analyst.py`, using gpt-5.6-luna with low reasoning and the saved ChatGPT
+login. There is no fixed menu of questions, keyword parser, or API-key fallback.
+The old `query_semantics.py` plan executor remains only for regression/reference;
+the listener does not use it to answer questions.
 
-"Show your inventory" lists tracked entries. "Show added inventory in the past
-week" filters receipt rows, not cumulative Inventory totals. Calendar intervals,
-synonyms and follow-ups are interpreted semantically; default date boundaries
-and displayed receipt timestamps are UTC. Dates are Slack photo posting times,
-not verified physical arrival times. Undated receipts are explicitly excluded,
-unknown quantities are partial totals, and repeated source records deduplicated.
-Order-date/status-history and requester-ownership filtering remain unsupported.
-The model is fallible; unsupported constraints must be explained, never silently
-reinterpreted as missing products. Answers list up to five products with row links.
+`query_data.py` snapshots all live Orders, Inventory, and Package receipts fields,
+plus locally parsed successful order-email observations, into an in-memory SQLite
+database. The reader sees schemas, row counts, bounded examples, current UTC time,
+and up to six captured same-thread messages. It chooses SELECT queries, inspects
+their results, and can refine them for up to four planning rounds before writing
+a natural answer from the evidence. Dates, requester/supplier filters, grouping,
+comparisons, aggregates, notes, email details, lot/expiry and storage questions
+can be combined without a separate feature or response template for each request.
+Requester names are available; a Slack user's identity is not automatically
+mapped to a purchaser name. Real ambiguity can require a clarification.
 
-Plans are cached against their catalog, while live quantities refresh on retry.
-Invalid model results are retried at most three times, then held as needs_review.
-Quota failures persist a 30-minute query-queue cooldown; requests stay queued
-instead of producing keyword-based answers. Query interpretation consumes shared
-Codex usage, including classifying irrelevant text messages. Photo attachments
-use the photo-analysis route; simultaneous query handling for photo captions and
-context before the bot captured a thread are not implemented.
+SQL runs only inside the snapshot database. SQLite authorization rejects writes,
+ATTACH, PRAGMA, schema access and extension loading. Google query clients reject
+all non-GET requests. Query execution has time/step/size bounds; results over 200
+rows are explicitly marked truncated and can be narrowed or aggregated. Structured
+output and source-reference validation precede delivery; source buttons are built
+from verified sheet rows. Source data never grants execution permissions. The model
+can still make reasoning mistakes; tests cover actual answers as well as boundaries.
+
+Order dates, shipment dates and receipt posting dates have separate columns.
+Native sheet dates are normalized to ISO; numeric item conversions come from the
+existing quantity code. Unknowns remain NULL. Email events may repeat shipments
+and are not independently additive. The reader is instructed to distinguish
+unique orders from order lines, avoid mixed-unit/currency totals, report missing
+coverage, and keep catalog matches provisional. It can explain recorded status
+history from email evidence, but cannot invent missing events or proof of payment.
+
+Answers are cached against the entire snapshot, including quantities, notes and
+email observations. Changed data triggers fresh analysis on retry. Invalid results
+retry at most three times before needs_review; quota exhaustion persists a 30-minute
+cooldown with the request queued. Analysis consumes shared Codex usage and can use
+multiple Luna calls per question. Ordinary unrelated chat stays silent. Photos
+retain their separate receipt-processing route; text queries do not change stock.
+Simultaneous question handling for photo captions and uncaptured thread history
+remain outside this text-only path.
 
 Answers distinguish shipped versus lab-received, exact order links versus
 provisional product totals, and cumulative deliveries versus unknown stock on
@@ -419,3 +432,14 @@ against recognized explicit pack sizes. A bottle's 500 mL is never 500 items.
 Original wording remains in the source/analysis, and normalized contents support
 email-to-label quantity reconciliation. Member-stated totals still replace the
 visible package count; they are never added to it.
+
+Optional `SLACK_TEST_CHANNEL_IDS` lists comma-separated test channels, distinct
+from `SLACK_CHANNEL_ID`. Invite the bot to each channel before restarting.
+Test channels use the same semantic readers and receipt quantity rules, with
+separate `.local/test-intake-<channel>` and `.local/test-queries-<channel>` queues.
+Photos produce explicitly marked previews matched against the current real
+Orders and Inventory. No test receipts are written to Google Sheets; displayed
+inventory totals exclude the test photo, and there is no simulated cumulative
+test inventory. Queries read the real sheet and say so. All test Google clients
+reject write requests. The production sheet and email workers remain attached
+only to the production channel. Test messages still consume shared Codex usage.
