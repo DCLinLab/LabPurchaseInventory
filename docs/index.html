@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="description" content="A personal, non-commercial project for tracking orders and received packages with a small group of lab colleagues."><title>LabPurchaseBot — Personal lab project</title><link rel="stylesheet" href="styles.css"></head>
+<body><a class="skip" href="#main">Skip to content</a>
+<div class="draft">Personal, non-commercial use.</div>
+<header class="header wrap"><a class="brand" href="index.html">LabPurchaseBot</a>
+<nav aria-label="Main navigation"><a href="index.html" aria-current="page">Home</a><a href="privacy.html">Privacy</a><a href="terms.html">Terms</a></nav></header>
+<main id="main" class="document wrap">
+<header class="document-head">
+<p class="eyebrow">Personal lab project</p>
+<h1>LabPurchaseBot</h1>
+<p class="intro">A small tool I use with my lab colleagues to keep track of orders and the packages we receive.</p>
+<p>This is a personal, non-commercial project for the maintainer and a small group of people they know in the lab. There is no public signup, subscription, or paid service.</p>
+</header>
+<section id="how-it-works" class="prose">
+<h2>What it does</h2>
+<ul>
+<li>Reads selected order emails from the connected Gmail account and posts relevant shipping updates in our Slack channel.</li>
+<li>Reads package-label photos posted in a configured channel, looks for a matching order, and records deliveries in our Google spreadsheet. For several identical packages, include the count with the photo.</li>
+<li>Answers questions about our order and inventory records in Slack.</li>
+</ul>
+<p>It can process messages without an @mention. It does not place orders, make payments, or send email.</p>
+</section>
+<section class="prose">
+<h2>Where the information goes</h2>
+<p>The bot runs on a lab workstation. It uses Gmail, Slack, Google Sheets, and OpenAI Codex. Relevant email content, attachments, package photos, messages, and spreadsheet records may be sent to OpenAI to read the information and answer questions.</p>
+<p>Records are stored on the workstation and in the connected services. Replies are visible to people in the relevant Slack channel or thread; spreadsheet access follows the file’s sharing permissions. This website only explains the project and does not display our lab records.</p>
+<p>The <a href="privacy.html">Privacy policy</a> explains access, storage, sharing, and deletion in more detail.</p>
+</section>
+<section class="prose">
+<h2>A few practical limits</h2>
+<p>The bot can misread a label or match the wrong order, so check important details. An email saying “shipped” does not mean we have received the package. Recorded deliveries also do not tell us how much remains after supplies have been used.</p>
+<p>The bot depends on the workstation and connected services being available. Questions about records are read-only; order updates and package receipts can change the spreadsheet.</p>
+</section>
+<section class="prose">
+<h2>Contact</h2>
+<p>For questions, corrections, or a request to remove information, email the project maintainer at <a href="mailto:linjhumse@gmail.com">linjhumse@gmail.com</a>.</p>
+<p><a href="privacy.html">Privacy policy</a> · <a href="terms.html">Terms of use</a></p>
+</section>
+</main><footer class="footer wrap"><div><strong>LabPurchaseBot</strong><p>A personal project for keeping track of lab orders.</p></div><div><a href="privacy.html">Privacy policy</a><a href="terms.html">Terms of use</a><a href="mailto:linjhumse@gmail.com">Contact</a></div><p class="fine">Updated September 20, 2026. Personal, non-commercial use by the maintainer and a small group of known lab colleagues.</p></footer></body></html>
+
