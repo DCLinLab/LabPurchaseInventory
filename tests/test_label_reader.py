@@ -14,7 +14,7 @@ from runtime_lock import InstanceLock
 
 
 def fields():
-    return {"items": [{**dict.fromkeys(ITEM_FIELDS), "source_file_ids": ["F1"],
+    return {"photo_context": "uncertain", "items": [{**dict.fromkeys(ITEM_FIELDS), "source_file_ids": ["F1"],
                        "label_type": "product", "product": "Centrifuge Tube", "confidence": "high",
                        "stated_quantity": None, "package_observation": None, "pack_contents": None,
                        "receipt_assessment": {'kind': 'delivery', 'confidence': 'high', 'evidence': 'Sealed labeled case.'},
@@ -119,7 +119,7 @@ class ReaderTests(unittest.TestCase):
                       "local_file": "F1.jpg", "status": "downloaded",
                       "sha256": hashlib.sha256(b"image").hexdigest()}]}
             def runner(command, **kwargs):
-                self.assertEqual(command[command.index("--model") + 1], "gpt-5.6-luna")
+                self.assertEqual(command[command.index("--model") + 1], "gpt-6-luna")
                 self.assertIn('forced_login_method="chatgpt"', command)
                 self.assertIn('model_reasoning_effort="low"', command)
                 self.assertNotIn("OPENAI_API_KEY", kwargs["env"])
@@ -127,10 +127,29 @@ class ReaderTests(unittest.TestCase):
                 return subprocess.CompletedProcess(command, 0, json.dumps({"type": "turn.completed", "usage": {}}), "")
             result = CodexLabelReader(executable="codex", runner=runner).read(record, folder)
             self.assertEqual(result["provider"], "codex_chatgpt")
-            self.assertEqual(result["model"], "gpt-5.6-luna")
+            self.assertEqual(result["model"], "gpt-6-luna")
 
 
 class QueueTests(unittest.TestCase):
+    def test_order_placement_photo_replies_without_receipt_write(self):
+        self.worker.bot_user_id = 'UBOT'
+        self.worker.receipt_reply = Mock()
+        data = self.reader.read.return_value['fields']
+        data['photo_context'] = 'order_placement'
+        data['items'][0]['receipt_assessment']['kind'] = 'existing_supply'
+        state = self.worker.process(self.manifest)
+        self.assertEqual(state['status'], 'sent')
+        self.assertIn('No order has been placed', state['reply_text'])
+        self.worker.receipt_reply.prepare.assert_not_called()
+
+    def test_unrelated_photo_stays_silent_under_reply_policy(self):
+        self.worker.bot_user_id = 'UBOT'
+        data = self.reader.read.return_value['fields']
+        data['photo_context'] = 'other'
+        data['items'][0]['receipt_assessment']['kind'] = 'unrelated'
+        self.assertEqual(self.worker.process(self.manifest)['status'], 'skipped')
+        self.client.chat_postMessage.assert_not_called()
+
     def test_shortage_pending_is_interpreted_and_then_stays_silent(self):
         self.record['caption'] = 'Running out of OCT.'
         write_json(self.manifest, self.record)
@@ -222,3 +241,20 @@ class QueueTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ExecutableRefreshTests(unittest.TestCase):
+    def test_rediscovers_removed_auto_executable(self):
+        from unittest.mock import patch
+        with patch('label_reader.find_codex', side_effect=['old.exe', 'new.exe']):
+            reader = CodexLabelReader()
+            with patch('label_reader.Path.is_file', return_value=False):
+                reader.refresh_executable()
+            self.assertEqual(reader.executable, 'new.exe')
+
+    def test_explicit_executable_is_preserved(self):
+        from unittest.mock import patch
+        reader = CodexLabelReader(executable='custom.exe')
+        with patch('label_reader.find_codex') as find:
+            reader.refresh_executable()
+            find.assert_not_called()

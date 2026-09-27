@@ -7,7 +7,7 @@ import json
 import logging
 from pathlib import Path
 import re
-from threading import Event, Thread
+from threading import Event, Thread, Lock
 import time
 from urllib.parse import quote
 
@@ -30,6 +30,29 @@ EPOCH = date(1899, 12, 30)
 
 class SheetSyncError(ValueError):
     """Fixed non-secret error codes only."""
+
+
+class SheetRequestGate:
+    """Share pacing and quota cooldown across all bot workers and stores."""
+    def __init__(self, clock=time.monotonic, sleep=time.sleep):
+        self.clock, self.sleep = clock, sleep
+        self.lock = Lock()
+        self.next_at = 0
+        self.blocked_until = 0
+
+    def wait(self):
+        with self.lock:
+            if self.clock() < self.blocked_until:
+                raise SheetSyncError('sheet_rate_limited')
+            self.sleep(max(0, self.next_at - self.clock()))
+            self.next_at = self.clock() + 1.5
+
+    def cooldown(self):
+        with self.lock:
+            self.blocked_until = self.clock() + 65
+
+
+SHEET_REQUEST_GATE = SheetRequestGate()
 
 
 def receipt_rows(record, result):
@@ -84,6 +107,7 @@ class GoogleReceiptStore:
     def request(self, method, url, **kwargs):
         if self.session is None:
             self.session = self.session_factory()
+        SHEET_REQUEST_GATE.wait()
         try:
             response = self.session.request(method, url, timeout=30, **kwargs)
         except Exception as error:
@@ -91,6 +115,10 @@ class GoogleReceiptStore:
             self.session = None
             raise SheetSyncError('sheet_connection_failed') from error
         if not response.ok:
+            LOG.warning('Google Sheets request failed http=%s', response.status_code)
+            if response.status_code == 429:
+                SHEET_REQUEST_GATE.cooldown()
+                raise SheetSyncError('sheet_rate_limited')
             code = 'google_authorization_required' if response.status_code in (401, 403) else 'sheet_request_failed'
             if response.status_code in (401, 403):
                 self.session.close()

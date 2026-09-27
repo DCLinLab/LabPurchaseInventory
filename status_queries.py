@@ -157,16 +157,18 @@ def answer_query(text, orders, inventory, receipts, config, now=None, plan=None)
 
 
 class StatusQueryWorker:
-    def __init__(self,root,channel_id,client,config,clock=time.time,interpreter=None,reply_prefix=''):
+    def __init__(self,root,channel_id,client,config,clock=time.time,interpreter=None,reply_prefix='',bot_user_id=None):
         self.root,self.channel_id,self.client,self.config,self.clock=Path(root),channel_id,client,config,clock
         self.root.mkdir(parents=True,exist_ok=True)
         self.orders=ReadOnlyOrders(config);self.inventory=ReadOnlyInventory(config);self.receipts=ReadOnlyReceipts(config)
         self.stop=Event()
         self.interpreter = interpreter or QueryAnalyst()
         self.reply_prefix = reply_prefix
+        self.bot_user_id = bot_user_id
 
     def capture(self,event):
         if event.get('channel') != self.channel_id or event.get('files'): return False
+        if self.bot_user_id and f'<@{self.bot_user_id}>' not in event.get('text', ''): return False
         text = clean_query(event.get('text', ''))
         if not text or text.casefold() in {'ping', 'test'}: return False
         stamp=event.get('ts','');thread=event.get('thread_ts') or stamp
@@ -177,7 +179,8 @@ class StatusQueryWorker:
         try:
             with path.open('x',encoding='utf-8') as f:
                 json.dump({'status':'pending','channel':self.channel_id,'thread_ts':thread,
-                           'text':clean_query(event.get('text','')),'message_ts':stamp},f)
+                           'text':clean_query(event.get('text','')),'message_ts':stamp,
+                           'bot_mentioned': bool(self.bot_user_id and f'<@{self.bot_user_id}>' in event.get('text',''))},f)
         except FileExistsError:pass
         return True
 
@@ -186,6 +189,8 @@ class StatusQueryWorker:
         if state['channel']!=self.channel_id or not re.fullmatch(r'\d+\.\d+',state['thread_ts']):raise ValueError('wrong_query_destination')
         if state['status']=='posting':
             state['status']='delivery_uncertain';write_json(path,state)
+        if self.bot_user_id and not state.get('bot_mentioned') and state['status'] not in ('sent','delivery_uncertain'):
+            state.update(status='ignored', reason='mention_required');write_json(path,state);return state
         if state['status'] in ('sent','ignored','delivery_uncertain','needs_review') or self.clock()<state.get('retry_at',0):return state
         cooldown_path = self.root / 'reader-cooldown.json'
         cooldown = json.loads(cooldown_path.read_text()) if cooldown_path.exists() else {}
@@ -218,7 +223,8 @@ class StatusQueryWorker:
             cached_reply = state['analysis']['reply']
             reply = dict(cached_reply) if cached_reply else None
         except Exception as error:
-            code = str(error) if isinstance(error, ReaderError) else type(error).__name__
+            from sheet_sync import SheetSyncError
+            code = str(error) if isinstance(error, (ReaderError, SheetSyncError)) else type(error).__name__
             quota = code == 'codex_usage_limit'
             state.update(status='waiting_usage' if quota else 'retry_wait',error=code,
                          retry_at=self.clock()+(1800 if quota else 60))

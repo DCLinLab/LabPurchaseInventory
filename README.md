@@ -1,3 +1,11 @@
+## Reply policy
+
+The bot replies to text only when explicitly @mentioned, including thread replies
+and ping/test checks. Photos about order placement or fetching/receiving packages
+can receive replies without a mention. Other photos stay silent. Order requests
+are not treated as receipts, and the bot does not place orders. Email ingestion
+continues silently; unsolicited email-status Slack notifications are disabled.
+
 # LabPurchaseInventory
 
 Lab purchasing and inventory project. LabPurchaseBot receives package photos in
@@ -38,18 +46,18 @@ screenshots, logs, and commits.
 
 The check validates the bot identity and channel history access without sending
 messages. The listener then validates the Socket Mode connection. While it is
-running, send `ping` or `test` in the channel or a thread. LabPurchaseBot replies
+running, send `@LabPurchaseBot ping` or `@LabPurchaseBot test` in the channel or a thread. LabPurchaseBot replies
 in that thread. New human messages (including thread replies and file shares)
 are received without @mentions. Photo messages are saved under `.local/intake/`
 with their caption, author ID, channel/message/thread timestamps, and original
 image bytes. Regular logs contain timestamps and status, not message bodies.
-No @mention is required. Events from other channels, workspaces, apps, bots,
+Text replies require an @mention. Events from other channels, workspaces, apps, bots,
 message edits, deletions, and membership changes are ignored.
 
 Set `LABEL_READER_ENABLED=true` in `.env` to enable the label worker (false leaves
 capture and connection tests running). Install Codex and sign in with ChatGPT
 under the Windows account running the task. The reader is pinned to
-`gpt-5.6-luna` with reasoning effort `none`; no OpenAI API key is required or used.
+`gpt-6-luna` with reasoning effort `low`; no OpenAI API key is required or used.
 It shares the account's Codex allowance, including limits shared with Astra.
 When usage is exhausted, photos remain queued and the reader checks again after
 30 minutes. Missing login also pauses analysis. There is no API-key fallback.
@@ -230,7 +238,7 @@ are not required. `order_sync.py` polls every five minutes. The sender, earliest
 receipt time and enabled state live in ignored `.local/email-config.json`.
 The overlapping scan cursor and message cache prevent repeat downloads.
 
-`email_reader.py` uses gpt-5.6-luna with low reasoning through the saved Codex
+`email_reader.py` uses gpt-6-luna with low reasoning through the saved Codex
 ChatGPT login, without an API key. It interprets varied suppliers, languages,
 prose, tables, PDF layouts and image attachments. PDFs are rendered locally with
 Poppler; the model gets both extracted text and page images, including scans.
@@ -305,7 +313,7 @@ separate unfinished workflow.
 ## Inventory delivery summary
 
 `status_queries.py` sends text-only human messages (except ping/test) to
-`query_analyst.py`, using gpt-5.6-luna with low reasoning and the saved ChatGPT
+`query_analyst.py`, using gpt-6-luna with low reasoning and the saved ChatGPT
 login. There is no fixed menu of questions, keyword parser, or API-key fallback.
 The old `query_semantics.py` plan executor remains only for regression/reference;
 the listener does not use it to answer questions.

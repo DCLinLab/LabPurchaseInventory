@@ -28,7 +28,7 @@ ROOT = Path(__file__).resolve().parent
 LOG = logging.getLogger("labpurchase")
 PONG = (
     "Pong! LabPurchaseBot is connected on the lab workstation. "
-    "I can receive messages here without an @mention. "
+    "Mention me for questions. Order placement and pickup photos do not need a mention. "
     "Package photos are saved for label reading; received quantities are inferred when package counts and contents are clear."
 )
 
@@ -97,7 +97,8 @@ class MessageReceiver:
             if len(self._seen) > 4096:
                 self._seen.popitem(last=False)
         LOG.info("Received channel message ts=%s thread=%s", event["ts"], event.get("thread_ts", "-"))
-        if self.query_worker is not None and self.query_worker.capture(event):
+        mentioned = f"<@{self.bot_user_id}>" in event.get("text", "")
+        if mentioned and self.query_worker is not None and self.query_worker.capture(event):
             LOG.info('Status query queued ts=%s',event['ts'])
             return
         try:
@@ -105,7 +106,7 @@ class MessageReceiver:
                 record = self.photo_intake.capture(event, client, self.settings.bot_token)
                 if record:
                     LOG.info("Photo intake ts=%s status=%s photos=%s", event["ts"], record["status"], len(record["files"]))
-            if event.get("text", "").strip().casefold() not in {"ping", "test"}:
+            if not mentioned or event.get("text", "").replace(f"<@{self.bot_user_id}>", "").strip().casefold() not in {"ping", "test"}:
                 return
             client.chat_postMessage(
                 channel=self.settings.channel_id,
@@ -193,12 +194,14 @@ def main():
             sheet_worker.start()
             LOG.info("Automatic package receipt sheet sync enabled.")
             from status_queries import StatusQueryWorker
-            query_worker = StatusQueryWorker(ROOT/'.local'/'queries',settings.channel_id,client,sheet_worker.store.config)
+            query_worker = StatusQueryWorker(ROOT/'.local'/'queries',settings.channel_id,client,sheet_worker.store.config,bot_user_id=identity['user_id'])
             query_worker.start()
-            LOG.info('Flexible read-only lab analysis enabled; live sheet and parsed email snapshots; model=gpt-5.6-luna reasoning=low.')
+            LOG.info('Flexible read-only lab analysis enabled; live sheet and parsed email snapshots; model=gpt-6-luna reasoning=low.')
         receiver = MessageReceiver(settings,identity['user_id'],intake,query_worker)
         order_worker = configured_order_worker(client,settings.channel_id)
         if order_worker:
+            # Only reply to mentions and relevant photos; email sync stays silent.
+            order_worker.notifier = None
             order_worker.start()
             LOG.info("Semantic forwarded order email sync enabled; Luna reads varied suppliers, text, PDFs and image attachments.")
             if order_worker.notifier:
@@ -211,7 +214,7 @@ def main():
                 from receipt_reply import ReceiptReply
                 reply_builder = ReceiptReply(intake.root,settings.channel_id,sheet_worker.store.config)
                 LOG.info('Package replies include verified live order and inventory context.')
-            worker = LabelWorker(intake.root, settings.channel_id, client, reader, receipt_reply=reply_builder)
+            worker = LabelWorker(intake.root, settings.channel_id, client, reader, receipt_reply=reply_builder,bot_user_id=identity['user_id'])
             worker.start()
             LOG.info("Background label reader uses Codex ChatGPT login; model=%s ready=%s. Shared Codex allowance; no API-key fallback.", reader.model, reader.ready())
 

@@ -55,6 +55,7 @@ SCHEMA = object_schema({
             "evidence": NULLABLE_TEXT,
         })]},
     })},
+    "photo_context": {"type": "string", "enum": ["order_placement", "fetching", "other", "uncertain"]},
     "caption_interpretation": object_schema({
         "received_quantity_statement": NULLABLE_TEXT,
         "intended_storage": NULLABLE_TEXT,
@@ -72,12 +73,19 @@ Extract only clearly supported observations. Use null for missing/uncertain fiel
 Preserve catalog, tracking and lot identifiers exactly; don't guess hidden digits.
 Keep discriminating specifications (15 mL is different from 50 mL).
 The channel contains BOTH deliveries and photos of existing supplies running out.
+Classify photo_context from image AND caption: order_placement for purchasing/reorder requests or order confirmations; fetching for package receipt, pickup or collection; other for unrelated photos or mere stock discussion; uncertain if unclear. This classification NEVER makes an order request a delivery.
 First assess each item with receipt_assessment, using the image AND caption.
 A readable product label, catalog number, pack size or bottle alone does NOT prove
 a delivery. Delivery evidence includes an intact/sealed supplier case or pack,
 shipping/packing labels visibly attached to a delivery container, or explicit
-completed receipt wording with a compatible product photo. An isolated shipping
-label/packing slip without a package is uncertain. Open, worn, partly used or
+completed receipt wording with a compatible product photo. In this lab channel,
+a photo showing the actual item, small product container or small bag together
+with its corresponding packing list counts as high-confidence delivery evidence
+and photo_context fetching, even without a caption, sealed outer box or shipping
+wrapper. Members may remove the outer packaging before photographing a receipt.
+Use the visible item/list relationship as evidence; do not invent an outer package
+or assume the full packing-list quantity arrived. An isolated shipping label or
+packing slip with no visible item or package remains uncertain. Open, worn, partly used or
 nearly empty supplies on a lab bench are existing_supply, unless clear completed
 arrival context establishes newly unpacked supplies. A fresh-looking bottle alone
 without arrival context is uncertain, even if its product label is perfectly clear.
@@ -203,6 +211,7 @@ def validate_result(value, file_ids):
         # valid but cannot acquire a count without a new observation.
         import copy
         checked = copy.deepcopy(value)
+        checked.setdefault("photo_context", "uncertain")
         for item in checked.get('items', []):
             item.setdefault('pack_contents', None)
             item.setdefault('package_observation', None)
@@ -237,7 +246,8 @@ def find_codex():
 
 
 class CodexLabelReader:
-    def __init__(self, executable=None, timeout=300, runner=subprocess.run, model="gpt-5.6-luna"):
+    def __init__(self, executable=None, timeout=300, runner=subprocess.run, model="gpt-6-luna"):
+        self.auto_executable = executable is None
         self.executable = executable or find_codex()
         if not self.executable:
             raise ReaderError("codex_not_installed")
@@ -252,7 +262,15 @@ class CodexLabelReader:
         except (ReaderError, OSError, subprocess.SubprocessError):
             return False
 
+    def refresh_executable(self):
+        if self.auto_executable and not Path(self.executable).is_file():
+            executable = find_codex()
+            if not executable:
+                raise ReaderError('codex_not_installed')
+            self.executable = executable
+
     def check_login(self):
+        self.refresh_executable()
         result = self.runner([self.executable, "login", "status"],
                              capture_output=True, text=True, encoding="utf-8", errors="replace",
                              timeout=30, env=clean_environment(), **self.process_options())
@@ -289,6 +307,7 @@ class CodexLabelReader:
 
     def structured(self, schema, instructions, prompt, images=()):
         """Tool-free structured interpretation with the same isolated login/runtime."""
+        self.refresh_executable()
         # A separate empty working directory avoids repository configuration.
         # Auth remains in Codex's own credential store; no Slack/API keys are passed.
         with tempfile.TemporaryDirectory(prefix="labpurchase-reader-") as temporary:
@@ -345,6 +364,10 @@ def render_reply(result, record):
     fields = result["fields"]
     lines = ["I read the package photo(s):"]
     relevant = [item for item in fields["items"] if is_delivery_item(item)]
+    if not relevant and fields.get("photo_context") == "order_placement":
+        return "I read the order-related photo. No order has been placed by me, and no receipt or stock change has been recorded."
+    if not relevant and fields.get("photo_context") == "fetching":
+        return "I read the pickup-related photo, but could not confirm a completed package receipt. No receipt or stock change has been recorded."
     if not relevant:
         return None  # Existing supplies and uncertain scenes stay silent.
     labels = {"brand_or_supplier": "Brand/supplier", "catalog_number": "Catalog",

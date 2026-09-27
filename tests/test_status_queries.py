@@ -35,6 +35,20 @@ class WorkerTests(unittest.TestCase):
 
     def path(self):return next(self.worker.root.glob('*.json'))
 
+    def test_mentions_required_and_old_pending_query_is_suppressed(self):
+        self.worker.capture(self.event)
+        self.worker.bot_user_id = 'UBOT'
+        self.assertEqual(self.worker.process(self.path())['status'], 'ignored')
+        self.client.chat_postMessage.assert_not_called()
+        self.worker.orders.snapshot.assert_not_called()
+        self.event.update(ts='101.1')
+        self.assertFalse(self.worker.capture(self.event))
+        self.event['text'] = '<@UBOT> ' + self.event['text']
+        self.assertTrue(self.worker.capture(self.event))
+        path = self.worker.root / 'C123_101.1.json'
+        self.assertTrue(json.loads(path.read_text())['bot_mentioned'])
+        self.assertEqual(self.worker.process(path)['status'], 'sent')
+
     def test_query_replies_in_thread_once_and_never_writes_google(self):
         self.assertTrue(self.worker.capture(self.event));self.worker.capture(self.event)
         self.assertEqual(self.worker.process(self.path())['status'],'sent')

@@ -18,7 +18,12 @@ slips, and unrelated images. It should extract only supported observations:
 
 Before creating a receipt, each item also needs a high-confidence visual delivery
 assessment with concrete evidence. Sealed cases and delivery packaging are useful
-evidence; clear product text on an existing bottle is not. Use image condition and
+evidence; clear product text on an existing bottle is not. In this channel, an
+actual item, small product container or small bag photographed with its
+corresponding packing list also counts as high-confidence receipt evidence.
+Neither a caption nor intact outer packaging is required: members may remove
+the shipping wrapper first. A packing list alone remains insufficient, and its
+listed quantity is not automatically the quantity physically received. Use image condition and
 caption context together. Existing supplies, uncertain scenes and unrelated
 objects remain silent and excluded from receipt entries and quantity inference.
 An ambiguous uncaptioned photo must not generate a follow-up question. Label

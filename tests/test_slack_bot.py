@@ -12,10 +12,10 @@ class ReceiverTests(unittest.TestCase):
         self.client = Mock()
         self.body = {
             "team_id": "Ttarget", "api_app_id": "Atarget", "event_id": "Ev1",
-            "event": {"type": "message", "channel": "Ctarget", "user": "Uhuman", "text": "ping", "ts": "100.1"},
+            "event": {"type": "message", "channel": "Ctarget", "user": "Uhuman", "text": "<@Ubot> ping", "ts": "100.1"},
         }
 
-    def test_ping_without_mention_replies_in_its_thread(self):
+    def test_mentioned_ping_replies_in_its_thread(self):
         self.receiver.receive(self.body, self.client)
         self.assertEqual(self.client.chat_postMessage.call_args.kwargs["thread_ts"], "100.1")
         self.assertEqual(self.client.chat_postMessage.call_args.kwargs["channel"], "Ctarget")
@@ -26,7 +26,7 @@ class ReceiverTests(unittest.TestCase):
         self.assertEqual(self.client.chat_postMessage.call_args.kwargs["thread_ts"], "99.1")
 
     def test_test_also_triggers_a_connection_reply(self):
-        self.body["event"]["text"] = " Test "
+        self.body["event"]["text"] = "<@Ubot> Test "
         self.receiver.receive(self.body, self.client)
         self.client.chat_postMessage.assert_called_once()
 
@@ -61,6 +61,14 @@ class ReceiverTests(unittest.TestCase):
         self.receiver.receive(broadcast, self.client)
         self.client.chat_postMessage.assert_called_once()
 
+    def test_unmentioned_text_and_ping_do_not_queue_or_reply(self):
+        for text in ('ping', 'What is my order status?', '<@Uother> test'):
+            receiver = MessageReceiver(self.settings, 'Ubot', query_worker=Mock())
+            self.body['event']['text'] = text
+            receiver.receive(self.body, self.client)
+            receiver.query_worker.capture.assert_not_called()
+        self.client.chat_postMessage.assert_not_called()
+
     def test_file_only_message_is_received(self):
         self.body["event"].update(subtype="file_share", text="", files=[{"id": "F1"}])
         with self.assertLogs("labpurchase", level="INFO"):
@@ -85,10 +93,10 @@ class ReceiverTests(unittest.TestCase):
         intake.capture.assert_called_once()
         self.client.chat_postMessage.assert_not_called()
 
-    def test_order_question_routes_before_shortage_filter_without_a_mention(self):
+    def test_mentioned_order_question_routes_to_query_worker(self):
         intake=Mock();queries=Mock();queries.capture.return_value=True
         receiver=MessageReceiver(self.settings,'Ubot',intake,queries)
-        self.body['event'].update(text='Running out of tubes. What is the status of order A123?')
+        self.body['event'].update(text='<@Ubot> Running out of tubes. What is the status of order A123?')
         receiver.receive(self.body,self.client)
         queries.capture.assert_called_once_with(self.body['event'])
         intake.capture.assert_not_called();self.client.chat_postMessage.assert_not_called()

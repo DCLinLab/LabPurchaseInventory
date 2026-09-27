@@ -15,12 +15,13 @@ LOG = logging.getLogger("labpurchase")
 
 
 class LabelWorker:
-    def __init__(self, root, channel_id, client, reader, clock=time.time, receipt_reply=None):
+    def __init__(self, root, channel_id, client, reader, clock=time.time, receipt_reply=None, bot_user_id=None):
         self.root = Path(root)
         self.channel_id, self.client, self.reader, self.clock = channel_id, client, reader, clock
         self.stop = Event()
         self.thread = None
         self.receipt_reply = receipt_reply
+        self.bot_user_id = bot_user_id
 
     def start(self):
         self.thread = Thread(target=self.run, name="package-label-reader", daemon=True)
@@ -103,15 +104,25 @@ class LabelWorker:
             LOG.info("Package label ready ts=%s", record["message_ts"])
         if deliver and state["status"] in {"ready", "failed_ready"}:
             failed = state["status"] == "failed_ready"
+            mentioned = bool(self.bot_user_id and f"<@{self.bot_user_id}>" in record.get("caption", ""))
+            from message_intent import is_delivery_item
+            fields = state.get("result", {}).get("fields", {})
+            delivery = any(is_delivery_item(item) for item in fields.get("items", []))
+            if self.bot_user_id and not mentioned and not delivery and fields.get("photo_context") not in {"order_placement", "fetching"}:
+                state.update(status="skipped", reason="outside_reply_scope")
+                write_json(state_path, state)
+                return state
             reply = ("I saved the package photos, but automatic label reading failed after three attempts. "
                      "Please have the workstation operator check the reader's login or connection. "
                      "Stock counts have not changed.") if failed else render_reply(state["result"], record)
+            if not reply and mentioned:
+                reply = "I could not confirm an order or package receipt from this photo. Please describe what you need help with."
             if not reply:
                 state.update(status='skipped', reason='no_clear_delivery_evidence')
                 write_json(state_path, state)
                 return state
             links = None
-            if not failed and self.receipt_reply is not None:
+            if not failed and delivery and self.receipt_reply is not None:
                 try:
                     prepared = self.receipt_reply.prepare(state['result'],record,manifest)
                     if not prepared:

@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from label_reader import ITEM_FIELDS
 from photo_intake import write_json
@@ -167,6 +167,37 @@ class StoreTests(unittest.TestCase):
         self.store.values = Mock(return_value=[HEADERS[::-1]])
         with self.assertRaisesRegex(SheetSyncError, 'receipt_headers_changed'):
             self.store.snapshot()
+
+
+class RequestPacingTests(unittest.TestCase):
+    def test_shared_spacing_and_cooldown(self):
+        from sheet_sync import SheetRequestGate
+        now = [100.0]
+        def sleep(delay): now[0] += delay
+        gate = SheetRequestGate(clock=lambda: now[0], sleep=sleep)
+        gate.wait()
+        gate.wait()
+        self.assertEqual(now[0], 101.5)
+        gate.cooldown()
+        with self.assertRaisesRegex(SheetSyncError, 'sheet_rate_limited'):
+            gate.wait()
+        now[0] += 65
+        gate.wait()
+
+    def test_quota_response_blocks_other_stores_without_replaying_write(self):
+        from sheet_sync import SheetRequestGate
+        gate = SheetRequestGate(clock=lambda: 100, sleep=lambda _: None)
+        session = Mock()
+        session.request.return_value = Mock(ok=False, status_code=429)
+        config = {'account':'linjhumse@gmail.com','spreadsheet_id':'test',
+                  'tabs':{'Package receipts':{'sheet_id':123}}}
+        first = GoogleReceiptStore(config, session_factory=lambda:session)
+        second = GoogleReceiptStore(config, session_factory=lambda:session)
+        with patch('sheet_sync.SHEET_REQUEST_GATE', gate):
+            for store in (first, second):
+                with self.assertRaisesRegex(SheetSyncError, 'sheet_rate_limited'):
+                    store.request('POST', store.base)
+        session.request.assert_called_once()
 
 
 if __name__ == '__main__':

@@ -84,14 +84,14 @@ def start_test_channel(local_root, settings, channel, bot_user_id, client, confi
     local_root = Path(local_root)
     intake = PhotoIntake(local_root / ('test-intake-' + channel))
     query = StatusQueryWorker(local_root / ('test-queries-' + channel), channel, client, config,
-                              reply_prefix=TEST_NOTICE + 'Queries show real sheet data; test photos are excluded.\n')
+                              bot_user_id=bot_user_id, reply_prefix=TEST_NOTICE + 'Queries show real sheet data; test photos are excluded.\n')
     query.orders, query.inventory, query.receipts = ReadOnlyOrders(config), ReadOnlyInventory(config), ReadOnlyReceipts(config)
     workers = [query]
     if label_enabled:
         workers.append(LabelWorker(intake.root, channel, client, CodexLabelReader(),
-                                   receipt_reply=PreviewReceiptReply(local_root, config)))
+                                   receipt_reply=PreviewReceiptReply(local_root, config),bot_user_id=bot_user_id))
     receiver = MessageReceiver(replace(settings, channel_id=channel), bot_user_id, intake, query,
-                               pong=TEST_NOTICE + 'Pong! Send a package photo with its total count, or ask about orders/inventory, without an @mention. Questions read the real sheet; test photos produce previews only.')
+                               pong=TEST_NOTICE + 'Pong! Send a package photo with its total count, or @mention me to ask about orders/inventory. Questions read the real sheet; test photos produce previews only.')
     for worker in workers:
         worker.start()
     return receiver, workers

@@ -93,7 +93,7 @@ class TestChannelTests(unittest.TestCase):
             self.assertIsInstance(workers[1].receipt_reply, PreviewReceiptReply)
             receiver.query_worker.capture = Mock(return_value=False)
             body={'team_id':'T123','api_app_id':'A123','event':{
-                'type':'message','user':'UHUMAN','channel':'CMAIN','ts':'100.1','text':'ping'}}
+                'type':'message','user':'UHUMAN','channel':'CMAIN','ts':'100.1','text':'<@UBOT> ping'}}
             receiver.receive(body,client)
             client.chat_postMessage.assert_not_called()
             body['event']['channel']='C123'

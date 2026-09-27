@@ -3,6 +3,8 @@
 import hashlib
 import io
 import json
+import os
+import tempfile
 import re
 import threading
 import warnings
@@ -92,9 +94,18 @@ def image_details(data):
 
 
 def write_json(path, value):
-    temporary = path.with_suffix(".json.tmp")
-    temporary.write_text(json.dumps(value, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    temporary.replace(path)
+    path = Path(path)
+    with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=path.parent,
+                                     prefix=path.name + '.', suffix='.tmp', delete=False) as handle:
+        temporary = Path(handle.name)
+        json.dump(value, handle, indent=2, ensure_ascii=False)
+        handle.write('\n')
+        handle.flush()
+        os.fsync(handle.fileno())
+    try:
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 class PhotoIntake:
