@@ -200,12 +200,10 @@ def main():
         receiver = MessageReceiver(settings,identity['user_id'],intake,query_worker)
         order_worker = configured_order_worker(client,settings.channel_id)
         if order_worker:
-            # Only reply to mentions and relevant photos; email sync stays silent.
-            order_worker.notifier = None
             order_worker.start()
             LOG.info("Semantic forwarded order email sync enabled; Luna reads varied suppliers, text, PDFs and image attachments.")
             if order_worker.notifier:
-                LOG.info('Order email status notifications enabled for channel=%s.',settings.channel_id)
+                LOG.info('Order email status notifications enabled for channel=%s.',order_worker.notifier.channel_id)
         worker = None
         if os.environ.get("LABEL_READER_ENABLED", "false").lower() == "true":
             reader = CodexLabelReader()

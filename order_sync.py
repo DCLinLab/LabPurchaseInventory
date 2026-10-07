@@ -319,7 +319,10 @@ def configured_order_worker(client=None, channel_id=None):
     notifier=None
     if config.get('slack_notifications_enabled'):
         from order_notifications import OrderNotifier
-        if client is None or channel_id is None:
+        notification_channel = config.get('slack_notification_channel_id')
+        if notification_channel != 'C04A5S6B7GX':
+            raise ValueError('order_notifications_require_production_channel')
+        if client is None:
             from slack_bot import Settings
             from slack_sdk import WebClient
             settings=Settings.from_environment()
@@ -327,8 +330,7 @@ def configured_order_worker(client=None, channel_id=None):
             identity=client.auth_test()
             if identity.get('team_id')!=settings.team_id or not identity.get('bot_id'):
                 raise ValueError('wrong_order_notification_workspace')
-            channel_id=settings.channel_id
-        notifier=OrderNotifier(ROOT/'.local'/'email-intake'/'slack-notifications.json',client,channel_id,sheet_config)
+        notifier=OrderNotifier(ROOT/'.local'/'email-intake'/f'slack-notifications-{notification_channel}.json',client,notification_channel,sheet_config)
     return OrderWorker(config,sheet_config,notifier)
 
 

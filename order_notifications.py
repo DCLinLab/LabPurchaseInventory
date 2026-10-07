@@ -1,5 +1,8 @@
 """Durable Slack notifications for meaningful email-derived order changes."""
 
+import html
+import re
+from datetime import datetime
 import hashlib
 import json
 import time
@@ -19,31 +22,67 @@ def status_fingerprint(order):
     return hashlib.sha256(json.dumps(state,sort_keys=True).encode()).hexdigest()
 
 
+def display_value(value):
+    # Decode HTML, then neutralize email-supplied Slack mentions and formatting.
+    value=plain(html.unescape(str(value)))
+    for old,new in (('*','∗'),('_','＿'),('`','ʼ'),('~','～')):
+        value=value.replace(old,new)
+    return value.replace('&','&amp;').replace('<','&lt;').replace('>','&gt;')
+
+
 def status_text(order):
-    shipped, total = order['quantity_shipped'],order['quantity_ordered']
-    unit = order.get('unit') or 'unit unknown'
-    lines = ['Order email update: ' + plain(order['product']),
-             'Supplier: ' + plain(order['supplier']) + ' | Order: ' + plain(order['order_id']),
-             'Catalog: ' + plain(order['catalog'])]
-    if order.get('specifications') or order.get('pack_size'):
-        lines.append('Details: ' + plain('; '.join(v for v in (order.get('specifications'),order.get('pack_size')) if v)))
-    if order.get('semantic_version'):
-        from order_reconcile import progress
-        lines.append('Status: '+progress(order)+'.')
-        if total is not None: lines.append(f'Ordered: {total:g} {plain(unit)}(s).')
-        if order.get('status_detail'): lines.append(plain(order['status_detail']))
-        if order.get('invoice_numbers'): lines.append('Invoice received: '+', '.join(plain(i) for i in order['invoice_numbers'])+'; payment status not inferred.')
-    else:
-        lines.append(f'Shipped: {shipped}' + (f' of {total}' if total is not None else '; ordered total unknown') + f' {plain(unit)}(s).')
-    for shipment in order['shipments']:
-        lines.append(f"Shipment {plain(shipment['number'])}: {shipment['quantity']} {plain(unit)}(s)" +
-                     (f"; shipped {plain(shipment['date'])}" if shipment.get('date') else '') + '.')
-    if order.get('tracking'):
-        lines.append('Tracking: ' + ', '.join(plain(t) for t in order['tracking']))
-    if order.get('invoices'):
-        lines.append('Invoice notification received: ' + ', '.join(plain(i) for i in order['invoices']) + ' (notification only; not a bill to pay).')
-    lines.append('Shipment status comes from email; lab receipt is tracked separately from package photos.')
+    from order_reconcile import STATUS_LABELS
+    value=display_value
+    product=order['product'];brand=None
+    if product.lower().startswith('medchemexpress,'):
+        brand='MedChemExpress';product=product.split(',',1)[1].strip()
+    lines=['📦 *Order update — '+value(product)+'*',
+           '*Status: '+value(STATUS_LABELS.get(order.get('status'),'Status not recorded'))+'*']
+    detail=html.unescape(order.get('status_detail') or '').strip()
+    match=re.fullmatch(r'Estimated delivery(?: date)?:\s*(\d{2}/\d{2}/\d{4})',detail,re.I)
+    if match:
+        try:detail='Estimated delivery: '+datetime.strptime(match[1],'%m/%d/%Y').strftime('%B %d, %Y').replace(' 0',' ')
+        except ValueError:pass
+    if detail:lines.append(value(detail))
+    lines.append('')
+    def field(label,text):
+        if text is not None and text!='':lines.append('• *'+label+':* '+value(text))
+    field('Brand',brand);field('Supplier',order['supplier'])
+    field('Order #',order['order_id']);field('Catalog #',order['catalog'])
+    specs=[v.strip() for v in html.unescape(order.get('specifications') or '').split(';') if v.strip()]
+    amount=next((v for v in specs if re.fullmatch(r'\d+(?:\.\d+)?\s*(?:mg|g|kg|µg|ug|mL|ml|L)',v)),None)
+    total=order.get('quantity_ordered');unit=order.get('unit') or 'units (type unknown)'
+    combined=amount and unit.lower()=='each' and (order.get('pack_size') or '').lower() in ('','each of 1') and total is not None
+    if combined:
+        amount_display=re.sub(r'(?<=\d)(?=[A-Za-zµ])',' ',amount)
+        field('Quantity',f'{total:g} × {amount_display}');specs.remove(amount)
+    elif total is not None:field('Quantity',f'{total:g} {unit}')
+    else:field('Quantity','Not confirmed')
+    if not combined:field('Pack size',order.get('pack_size'))
+    for spec in specs:
+        m=re.fullmatch(r'(CAS|Purity):\s*(.+)',spec,re.I)
+        if m:field('CAS' if m[1].lower()=='cas' else 'Purity',m[2])
+        else:field('Details',spec)
+    for shipment in order.get('shipments',[]):
+        field('Shipment '+str(shipment['number']),str(shipment['quantity'])+' '+unit+(' — '+shipment['date'] if shipment.get('date') else ''))
+    if order.get('tracking'):field('Tracking',', '.join(order['tracking']))
+    invoices=order.get('invoice_numbers') or order.get('invoices')
+    if invoices:
+        note=' (payment status not inferred)' if order.get('invoice_numbers') else ' (notification only; not a bill to pay)'
+        field('Invoice',', '.join(invoices)+note)
+    shipped=order.get('quantity_shipped')
+    lines.extend(['',('Shipped quantity is not confirmed.' if shipped is None else f'Shipped: {shipped:g}'+(f' of {total:g}' if total is not None else '')+' '+value(unit)+'.'),
+                  'Lab receipt is tracked separately.'])
     return '\n'.join(lines)[:11000]
+
+
+def order_payload(text,links):
+    payload=slack_payload(text,links)
+    payload['text']=text;payload['mrkdwn']=True
+    for block in payload['blocks']:
+        if block['type']=='section':
+            block['text']={'type':'mrkdwn','text':block['text']['text'],'verbatim':True}
+    return payload
 
 
 def review_messages(root, conflicts):
@@ -92,7 +131,7 @@ class OrderNotifier:
         journal['events'][event_id]=state
         write_json(self.path,journal)
         try:
-            response=self.client.chat_postMessage(channel=self.channel_id,**slack_payload(text,links))
+            response=self.client.chat_postMessage(channel=self.channel_id,**order_payload(text,links))
             if not response.get('ts'):
                 raise ValueError('missing_slack_response_timestamp')
             state.update(status='sent',reply_ts=response['ts'],sent_at=self.clock())
@@ -108,35 +147,44 @@ class OrderNotifier:
 
     def run(self,orders,statuses,store,reviews=()):
         journal=self.load()
-        rows=store.snapshot() if any(statuses.get(k)=='synced' and journal['orders'].get(k)!=status_fingerprint(o)
-                                     for k,o in orders.items()) else {}
+        announced=journal.setdefault('announced_orders', {})
+        for key in journal['orders']:
+            announced.setdefault(key.rsplit('|', 1)[0], 'previously_recorded')
+        groups={}
+        for key,order in orders.items():
+            group=order_key(order['supplier'],order['order_id'],'').rsplit('|',1)[0]
+            groups.setdefault(group,[]).append((key,order))
+        pending={g:items for g,items in groups.items() if g not in announced}
+        rows=store.snapshot() if any(all(statuses.get(k)=='synced' for k,o in items)
+                                    for items in pending.values()) else {}
         by_key={order_key(r[3],r[0],r[5]):(row,r) for row,r in rows.items() if r[0] and r[3] and r[5]}
         outcomes=[]
-        for key,order in orders.items():
-            fingerprint=status_fingerprint(order)
-            if statuses.get(key)!='synced' or journal['orders'].get(key)==fingerprint:
-                continue
-            target=by_key.get(key)
-            if not target or target[1]!=order_row(order):
+        for group,items in pending.items():
+            if not all(statuses.get(k)=='synced' for k,o in items):continue
+            # Preserve uncertain deliveries from the old per-status journal.
+            legacy=[hashlib.sha256((k+'|'+status_fingerprint(o)).encode()).hexdigest() for k,o in items]
+            uncertain=False
+            for eid in legacy:
+                state=journal['events'].get(eid,{})
+                if state.get('status') in ('posting','delivery_uncertain','sent'):
+                    if state['status']=='posting':state['status']='delivery_uncertain'
+                    announced[group]=state['status'];outcomes.append(state['status'])
+                    uncertain=True;break
+            if uncertain:continue
+            if any(k not in by_key or by_key[k][1]!=order_row(o) for k,o in items):
                 outcomes.append('needs_review');continue
-            event_id=hashlib.sha256((key+'|'+fingerprint).encode()).hexdigest()
-            row=target[0]
+            event_id='first-order-'+hashlib.sha256(group.encode()).hexdigest()
+            row=by_key[items[0][0]][0]
             link=('https://docs.google.com/spreadsheets/d/'+self.sheet_config['spreadsheet_id']+
                   '/edit#gid='+str(self.sheet_config['tabs']['Orders']['sheet_id'])+'&range=A'+str(row))
-            previous=journal['events'].get(event_id,{}).get('status')
-            outcome=self.deliver(journal,event_id,status_text(order),[{'text':'Open order','url':link}])
-            if outcome=='sent':
-                journal['orders'][key]=fingerprint
-                write_json(self.path,journal)
-                if previous=='sent':continue
+            text='\n\n'.join(status_text(o) for k,o in items)[:11000]
+            outcome=self.deliver(journal,event_id,text,[{'text':'Open order','url':link}])
+            if outcome in ('sent','delivery_uncertain'):announced[group]=outcome
             outcomes.append(outcome)
-        for review in reviews:
-            mid=review['message_id']
-            if mid in journal.get('baseline_review_ids',[]):continue
-            eid='review-'+hashlib.sha256(mid.encode()).hexdigest()
-            if journal['events'].get(eid,{}).get('status') in ('sent','delivery_uncertain'):continue
-            text=('Order email needs review: '+plain(review.get('subject') or 'Order update')+
-                  '\nI could not reliably extract its status. The order status has not been inferred from this email.')
-            outcomes.append(self.deliver(journal,eid,text,[]))
+        # Later emails continue syncing, without another channel announcement.
+        for key,order in orders.items():
+            if statuses.get(key)=='synced' and key.rsplit('|',1)[0] in announced:
+                journal['orders'][key]=status_fingerprint(order)
+        write_json(self.path,journal)
         return {'sent':outcomes.count('sent'),'delivery_uncertain':outcomes.count('delivery_uncertain'),
-                'retry_wait':outcomes.count('retry_wait'),'needs_review':outcomes.count('needs_review')}
+                'retry_wait':outcomes.count('retry_wait'),'needs_review':outcomes.count('needs_review')+len(reviews)}

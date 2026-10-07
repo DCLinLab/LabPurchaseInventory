@@ -78,7 +78,7 @@ class MergeTests(unittest.TestCase):
         a,b=next(iter(before.values())),next(iter(after.values()))
         self.assertNotEqual(status_fingerprint(a),status_fingerprint(b))
         self.assertIn('Carrier reports delivered',status_text(b))
-        self.assertIn('lab receipt is tracked separately',status_text(b))
+        self.assertIn('Lab receipt is tracked separately',status_text(b))
 
 
 class QueueTests(unittest.TestCase):

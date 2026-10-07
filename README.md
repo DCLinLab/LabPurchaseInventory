@@ -4,7 +4,8 @@ The bot replies to text only when explicitly @mentioned, including thread replie
 and ping/test checks. Photos about order placement or fetching/receiving packages
 can receive replies without a mention. Other photos stay silent. Order requests
 are not treated as receipts, and the bot does not place orders. Email ingestion
-continues silently; unsolicited email-status Slack notifications are disabled.
+continues; email-status Slack reports are enabled only in production channel
+`C04A5S6B7GX`. The test channel receives no email-status reports.
 
 # LabPurchaseInventory
 
@@ -292,19 +293,20 @@ Run `.\.venv\Scripts\python.exe order_sync.py --once` for a single enabled pass.
 Its lock prevents competing order passes; receipt matches use the receipt lock.
 New documents update Orders and receipt matching; they do not place purchases.
 With `slack_notifications_enabled` in `.local/email-config.json`, the existing
-five-minute email worker also posts order-status changes to the configured lab
-channel. It reports product, catalog, supplier/order, shipped quantities/dates,
+five-minute email worker posts one initial report per supplier/order number to
+`slack_notification_channel_id`, which must be production channel `C04A5S6B7GX`. It reports product, catalog, supplier/order, shipped quantities/dates,
 available tracking and invoice notifications, with an Open order button. Shipping
 status is distinguished from physical lab receipt; prices/payment instructions
-are omitted. Unsupported or conflicting order emails produce a needs-review
-notice without guessing their status. Layout changes alone do not require review;
+are omitted. Unsupported or conflicting order emails remain flagged for review locally
+without posting an unidentifiable order notice. Layout changes alone do not require review;
 interpretation is semantic, while unsupported file types and genuinely ambiguous
 facts still need review.
 
-`.local/email-intake/slack-notifications.json` stores a durable baseline and each
+`.local/email-intake/slack-notifications-C04A5S6B7GX.json` stores a durable baseline and each
 delivery attempt. Initial enablement baselines already processed orders/review
 emails. New forwarding IDs or routine scans do not cause duplicate status posts;
-only a changed status fingerprint does. Each order row must be synced and freshly
+later emails update stored order status silently, including new catalog lines on
+the same order. Previously announced or baselined orders stay silent. Each new order must be synced and freshly
 verified before posting. Definitive Slack rejections retry; a timeout or interrupted
 post remains delivery-uncertain for operator review instead of blindly resending.
 Notifications use the standalone Slack bot and no additional model call. Reorder requests are a
